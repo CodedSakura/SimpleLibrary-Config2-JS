@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SimpLibConfig2</title>
+    <script src="read.js"></script>
+    <style>
+        body {
+            background-color: #212121;
+        }
+    </style>
+</head>
+<body>
+<script>
+const req = new XMLHttpRequest();
+req.addEventListener("readystatechange", () => {
+  if (req.readyState === 4 && req.status === 200) {
+    console.log(readConfig2(new Uint8Array(req.response)));
+  }
+});
+req.open("GET", "nuclearcraft.ncpf");
+req.responseType = 'arraybuffer';
+req.send();
+</script>
+</body>
+</html>
