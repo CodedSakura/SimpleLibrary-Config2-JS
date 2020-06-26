@@ -18,8 +18,8 @@ req.addEventListener("readystatechange", () => {
     console.log(readConfig2(new Uint8Array(req.response)));
   }
 });
-req.open("GET", "nuclearcraft.ncpf");
-// req.open("GET", "test.cf2");
+// req.open("GET", "nuclearcraft.ncpf");
+req.open("GET", "test.cf2");
 req.responseType = 'arraybuffer';
 req.send();
 </script>

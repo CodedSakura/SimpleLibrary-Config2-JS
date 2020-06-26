@@ -7,18 +7,7 @@ class ByteReader {
     this.index = 0;
   }
 
-  debug() {
-    console.info(
-      "<debug>", "char:", this.index,
-      ...Array.from(this.data).slice(Math.max(this.index-4, 0), Math.min(this.index+8, this.data.length-1))
-        .reduce((s, v, i) =>
-          s.concat(i === 4 ? "_" : "", ("0" + v.toString(16).toUpperCase()).slice(-2)), []
-        ).filter(v => v)
-    );
-  }
-
   nextByte(): number {
-    // console.trace();
     return this.data[this.index++];
   }
   nextBytes(count: number): number[] {
@@ -52,6 +41,9 @@ class ByteReader {
     return bits.reduce((s, v, i, {length}) => s | BigInt(v) << BigInt(length - i - 1), 0n);
   }
 
+  nextShort(): number {
+    return ByteReader.bytesToNumber(this.nextBytes(2));
+  }
   nextInteger(): number {
     return ByteReader.bytesToNumber(this.nextBytes(4));
   }
@@ -65,7 +57,6 @@ class ByteReader {
     const buf = new ArrayBuffer(4);
     const view = new DataView(buf);
     const bytes = this.nextBytes(4);
-    // console.log(bytes);
     bytes.forEach((v, i) => view.setUint8(i, v));
     return view.getFloat32(0);
   }
@@ -73,7 +64,6 @@ class ByteReader {
     const buf = new ArrayBuffer(8);
     const view = new DataView(buf);
     const bytes = this.nextBytes(8);
-    // console.log(bytes);
     bytes.forEach((v, i) => view.setUint8(i, v));
     return view.getFloat64(0);
   }
@@ -113,8 +103,7 @@ interface Config2Root {
   data: object
 }
 
-function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
-  console.log("v7");
+function readConfig2(data: Uint8Array): Config2Root[] {
   const out: Config2Root[] = [];
   const reader = new ByteReader(data);
 
@@ -133,17 +122,10 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           else current = current[""];
           break;
         case NestType.List:
-          // console.log("<< A <<", current, arr.slice(i));
-          // if (i === arr.length - 1 && current[""].data.length === current[""].length - 1) {
-          //   arr.pop();
-          //   break;
-          // }
           current = current[""].data;
           break;
       }
-      // console.log(current, arr.slice(i+1).map(v => NestType[v]));
     });
-    console.log("<< B <<", current, nesting);
     return current;
   }
   function setData({name="", data}: {name?: string, data: any}) {
@@ -172,7 +154,6 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
     return current;
   }
   function rename(name) {
-    // nesting.pop();
     let current = getTop();
     delete Object.assign(current, {[name]: current[""] })[""];
   }
@@ -181,16 +162,11 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
     let topArray = undefined;
     if (nesting[nesting.length - 1] === NestType.List) {
       topArray = getTopArray();
-      // console.log("<>><<>", topArray);
-      // reader.debug();
     }
     const skipName = !!topArray;
 
-    console.log(`>>>> ${ConfigType[currentType]}`);
-    // reader.debug();
     switch (currentType) {
       case ConfigType.None: {
-        console.log(">> A >>", nesting, skipName);
         nesting.pop();
         if (nesting.length === 0) {
           out.push({
@@ -199,15 +175,8 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           });
           nesting.push(NestType.Base);
         } else {
-          reader.debug();
-          // if (nesting[nesting.length - 1] === NestType.List) {
-          //   console.log(getTop());
-          // } else {
           if (nesting[nesting.length - 1] === NestType.List) {
             topArray = getTopArray();
-            console.log(">> C >>", topArray);
-            // nesting.pop();
-            // if (topArray.mode === 0x02) {} else
             if (topArray.data.length === topArray.length) {
               nesting.pop();
             } else {
@@ -219,25 +188,18 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
             }
           }
           rename(reader.nextModifiedUTF8String());
-          // }
         }
         break;
       }
       case ConfigType.Config:
-        console.log("<>config<>");
-        reader.debug();
         setData({data: {}});
-        // if (nesting[nesting.length-1] !== NestType.List)
         nesting.push(NestType.Standard);
         break;
       case ConfigType.String:
-        // console.log("<Asd>", skipName);
-        // reader.debug();
         setData({
           data: reader.nextModifiedUTF8String(),
           name: skipName ? "" : reader.nextModifiedUTF8String()
         });
-        reader.debug();
         break;
       case ConfigType.Integer:
         setData({
@@ -272,7 +234,6 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
       case ConfigType.HugeLong:
         break;
       case ConfigType.ConfigList: {
-        // reader.debug();
         const data: Partial<{ data: any[], mode: number, type: number, length: number }> =
           {data: [], mode: reader.nextByte()};
         switch (data.mode) {
@@ -281,7 +242,6 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
             setData({data: data});
             break;
           case 0x01:
-            // reader.debug();
             data.length = reader.nextInteger();
             data.type = reader.nextByte();
             setData({data: data});
@@ -303,6 +263,10 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
         });
         break;
       case ConfigType.Short:
+        setData({
+          data: reader.nextShort(),
+          name: skipName ? "" : reader.nextModifiedUTF8String()
+        });
         break;
       case ConfigType.NumberList: {
         let size = [reader.nextByte()];
@@ -333,8 +297,11 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
         const hasNeg = (maxDigits & 0b0100_0000) >> 6;
         const verbatim = (maxDigits & 0b1000_0000) >> 7;
         maxDigits = maxDigits & 0b0011_1111;
-        if (maxDigits === 0) {
-          arr.fill(0);
+
+        if (verbatim) {
+          for (let i = 0; i < arrLength; i++) {
+            arr[i] = reader.nextLong();
+          }
           setData({
             data: arr,
             name: skipName ? "" : reader.nextModifiedUTF8String()
@@ -342,8 +309,8 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           break;
         }
 
-        if (verbatim) {
-          arr = arr.fill(0).map(_ => reader.nextLong());
+        if (maxDigits === 0) {
+          arr.fill(0);
           setData({
             data: arr,
             name: skipName ? "" : reader.nextModifiedUTF8String()
@@ -374,31 +341,18 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
         break;
       }
       default:
-        reader.debug();
-        console.log(out, (currentType as number).toString(16));
-        throw new Error("unknown config type");
+        throw new Error(`unknown config type ("${currentType}")`);
     }
-    // if (nesting[nesting.length - 1] === NestType.List) {
-    //   let curr = getTopArray();
-    //   console.log("<>><<>", curr);
-    //   reader.debug();
-    //   if (curr.data.length !== curr.length)
-    //     continue;
-    // }
 
     if (topArray && topArray.mode === 0x01 && topArray.type !== ConfigType.Config) {
       if (topArray.data.length !== topArray.length) {
         continue;
       }
-      // only reached if it's full
       nesting.pop();
       rename(reader.nextModifiedUTF8String());
     }
     currentType = reader.nextByte();
   }
 
-  console.log(nesting);
-
-  if (out.length === 1) return out[0];
   return out;
 }
