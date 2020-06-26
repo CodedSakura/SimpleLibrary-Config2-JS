@@ -9,6 +9,7 @@ class ByteReader {
 
   debug() {
     console.info(
+      "<debug>", "char:", this.index,
       ...Array.from(this.data).slice(Math.max(this.index-4, 0), Math.min(this.index+8, this.data.length-1))
         .reduce((s, v, i) =>
           s.concat(i === 4 ? "_" : "", ("0" + v.toString(16).toUpperCase()).slice(-2)), []
@@ -17,6 +18,7 @@ class ByteReader {
   }
 
   nextByte(): number {
+    // console.trace();
     return this.data[this.index++];
   }
   nextBytes(count: number): number[] {
@@ -40,15 +42,21 @@ class ByteReader {
   static bytesToNumber(bytes: number[]): number {
     return bytes.reduce((s, v, i, {length}) => s | v << (length - i - 1 << 3), 0);
   }
+  static bytesToBigInt(bytes: number[]): bigint {
+    return bytes.reduce((s, v, i, {length}) => s | BigInt(v) << BigInt(length - i - 1 << 3), 0n);
+  }
   static bitsToNumber(bits: (0|1)[]): number {
     return bits.reduce((s, v, i, {length}) => s | v << (length - i - 1), 0);
+  }
+  static bitsToBigInt(bits: (0|1)[]): bigint {
+    return bits.reduce((s, v, i, {length}) => s | BigInt(v) << BigInt(length - i - 1), 0n);
   }
 
   nextInteger(): number {
     return ByteReader.bytesToNumber(this.nextBytes(4));
   }
-  nextLong(): number {
-    return ByteReader.bytesToNumber(this.nextBytes(8));
+  nextLong(): BigInt {
+    return ByteReader.bytesToBigInt(this.nextBytes(8));
   }
   nextBoolean(): boolean {
     return this.nextByte() === 1;
@@ -57,9 +65,17 @@ class ByteReader {
     const buf = new ArrayBuffer(4);
     const view = new DataView(buf);
     const bytes = this.nextBytes(4);
-    console.log(bytes);
+    // console.log(bytes);
     bytes.forEach((v, i) => view.setUint8(i, v));
     return view.getFloat32(0);
+  }
+  nextDouble(): number {
+    const buf = new ArrayBuffer(8);
+    const view = new DataView(buf);
+    const bytes = this.nextBytes(8);
+    // console.log(bytes);
+    bytes.forEach((v, i) => view.setUint8(i, v));
+    return view.getFloat64(0);
   }
   nextModifiedUTF8String(): string {
     const length = ByteReader.bytesToNumber(this.nextBytes(2));
@@ -85,6 +101,13 @@ enum ConfigType {
 
 enum NestType {Base, Standard, List}
 
+interface ArrayBase {
+  data: any[]
+  mode: number
+  type: number
+  length: number
+}
+
 interface Config2Root {
   version: number
   data: object
@@ -98,9 +121,9 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
   let currentType: ConfigType = ConfigType.None;
   let nesting: NestType[] = [];
 
-  function setData({name = "", data}: { name?: string, data: any }) {
+  function getTop(): any {
     let current: any = out;
-    nesting.forEach((v, i, arr) => {
+    nesting.forEach((v) => {
       switch (v) {
         case NestType.Base:
           current = current[current.length - 1].data;
@@ -111,43 +134,64 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           break;
         case NestType.List:
           // console.log("<< A <<", current, arr.slice(i));
-          if (i === arr.length - 1 && current[""].data.length === current[""].length - 1) {
-            arr.pop();
-            break;
-          }
+          // if (i === arr.length - 1 && current[""].data.length === current[""].length - 1) {
+          //   arr.pop();
+          //   break;
+          // }
           current = current[""].data;
           break;
       }
       // console.log(current, arr.slice(i+1).map(v => NestType[v]));
     });
     console.log("<< B <<", current, nesting);
+    return current;
+  }
+  function setData({name="", data}: {name?: string, data: any}) {
+    let current = getTop();
     if (Array.isArray(current)) current.push(data);
     else current[name] = data;
   }
-  function rename(name) {
+
+  function getTopArray(): ArrayBase {
     let current: any = out;
-    nesting.forEach((v, i, arr) => {
+    nesting.forEach((v, i, {length}) => {
       switch (v) {
         case NestType.Base:
           current = current[current.length - 1].data;
           break;
         case NestType.Standard:
-          current = current[""];
+          if (Array.isArray(current)) current = current[current.length - 1];
+          else current = current[""];
           break;
         case NestType.List:
-          current = current[""].data;
-          current = current[current.length - 1];
+          current = current[""];
+          if (i !== length - 1) current = current.data;
           break;
       }
     });
+    return current;
+  }
+  function rename(name) {
+    // nesting.pop();
+    let current = getTop();
     delete Object.assign(current, {[name]: current[""] })[""];
   }
 
   while (reader.hasNextByte()) {
+    let topArray = undefined;
+    if (nesting[nesting.length - 1] === NestType.List) {
+      topArray = getTopArray();
+      // console.log("<>><<>", topArray);
+      // reader.debug();
+    }
+    const skipName = !!topArray;
+
+    console.log(`>>>> ${ConfigType[currentType]}`);
+    // reader.debug();
     switch (currentType) {
       case ConfigType.None: {
-        console.log(">> A >>", nesting);
-        let type = nesting.pop();
+        console.log(">> A >>", nesting, skipName);
+        nesting.pop();
         if (nesting.length === 0) {
           out.push({
             version: ByteReader.bytesToNumber(reader.nextBytes(2)),
@@ -156,68 +200,106 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           nesting.push(NestType.Base);
         } else {
           reader.debug();
-          if (nesting[nesting.length - 1] !== NestType.List)
-            rename(reader.nextModifiedUTF8String());
+          // if (nesting[nesting.length - 1] === NestType.List) {
+          //   console.log(getTop());
+          // } else {
+          if (nesting[nesting.length - 1] === NestType.List) {
+            topArray = getTopArray();
+            console.log(">> C >>", topArray);
+            // nesting.pop();
+            // if (topArray.mode === 0x02) {} else
+            if (topArray.data.length === topArray.length) {
+              nesting.pop();
+            } else {
+              if (topArray.mode === 0x01) {
+                currentType = topArray.type;
+                continue;
+              }
+              break;
+            }
+          }
+          rename(reader.nextModifiedUTF8String());
+          // }
         }
         break;
       }
       case ConfigType.Config:
+        console.log("<>config<>");
+        reader.debug();
         setData({data: {}});
         // if (nesting[nesting.length-1] !== NestType.List)
         nesting.push(NestType.Standard);
         break;
       case ConfigType.String:
+        // console.log("<Asd>", skipName);
+        // reader.debug();
         setData({
           data: reader.nextModifiedUTF8String(),
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
+        reader.debug();
         break;
       case ConfigType.Integer:
         setData({
           data: reader.nextInteger(),
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
         break;
       case ConfigType.Float:
         setData({
           data: reader.nextFloat(),
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
         break;
       case ConfigType.Boolean:
         setData({
           data: reader.nextBoolean(),
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
         break;
       case ConfigType.Long:
+        setData({
+          data: reader.nextLong(),
+          name: skipName ? "" : reader.nextModifiedUTF8String()
+        });
         break;
       case ConfigType.Double:
+        setData({
+          data: reader.nextDouble(),
+          name: skipName ? "" : reader.nextModifiedUTF8String()
+        });
         break;
       case ConfigType.HugeLong:
         break;
-      case ConfigType.ConfigList:
+      case ConfigType.ConfigList: {
         // reader.debug();
-        switch (reader.nextByte()) {
+        const data: Partial<{ data: any[], mode: number, type: number, length: number }> =
+          {data: [], mode: reader.nextByte()};
+        switch (data.mode) {
           case 0x00:
-            setData({data: {data: [], length: 0, index: 0}});
+            data.length = 0;
+            setData({data: data});
             break;
-          case 0x02:
-            setData({data: {data: [], length: -1, index: 0}});
+          case 0x01:
+            // reader.debug();
+            data.length = reader.nextInteger();
+            data.type = reader.nextByte();
+            setData({data: data});
             nesting.push(NestType.List);
-            break;
-          default:
-            reader.debug();
-            const length = reader.nextInteger();
-            setData({data: {data: new Array(length).fill({}), length: length, index: 0}});
+            currentType = data.type;
+            continue;
+          case 0x02:
+            data.length = -1;
+            setData({data: data});
             nesting.push(NestType.List);
             break;
         }
         break;
+      }
       case ConfigType.Byte:
         setData({
           data: reader.nextByte(),
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
         break;
       case ConfigType.Short:
@@ -241,7 +323,7 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
         if (arrLength === 0) {
           setData({
             data: [],
-            name: reader.nextModifiedUTF8String()
+            name: skipName ? "" : reader.nextModifiedUTF8String()
           });
           break;
         }
@@ -255,7 +337,7 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           arr.fill(0);
           setData({
             data: arr,
-            name: reader.nextModifiedUTF8String()
+            name: skipName ? "" : reader.nextModifiedUTF8String()
           });
           break;
         }
@@ -264,36 +346,58 @@ function readConfig2(data: Uint8Array): Config2Root|Config2Root[] {
           arr = arr.fill(0).map(_ => reader.nextLong());
           setData({
             data: arr,
-            name: reader.nextModifiedUTF8String()
+            name: skipName ? "" : reader.nextModifiedUTF8String()
           });
           break;
         }
 
-        let bits: (0|1)[] = []
+        let bits: (0 | 1)[] = []
         let sign = 1;
         for (let i = 0; i < arrLength; i++) {
-          while (bits.length < maxDigits + hasNeg)
+          while (bits.length < maxDigits + hasNeg) {
             bits = bits.concat(reader.next8Bits());
+          }
 
           if (hasNeg)
             sign = bits.splice(0, 1)[0] ? -1 : 1;
-          arr[i] = sign * ByteReader.bitsToNumber(bits.splice(0, maxDigits));
+          if (maxDigits + hasNeg > 53)
+            arr[i] = BigInt(sign) * ByteReader.bitsToBigInt(bits.splice(0, maxDigits));
+          else
+            arr[i] = sign * ByteReader.bitsToNumber(bits.splice(0, maxDigits));
         }
 
         setData({
           data: arr,
-          name: reader.nextModifiedUTF8String()
+          name: skipName ? "" : reader.nextModifiedUTF8String()
         });
 
         break;
       }
       default:
+        reader.debug();
         console.log(out, (currentType as number).toString(16));
         throw new Error("unknown config type");
     }
+    // if (nesting[nesting.length - 1] === NestType.List) {
+    //   let curr = getTopArray();
+    //   console.log("<>><<>", curr);
+    //   reader.debug();
+    //   if (curr.data.length !== curr.length)
+    //     continue;
+    // }
+
+    if (topArray && topArray.mode === 0x01 && topArray.type !== ConfigType.Config) {
+      if (topArray.data.length !== topArray.length) {
+        continue;
+      }
+      // only reached if it's full
+      nesting.pop();
+      rename(reader.nextModifiedUTF8String());
+    }
     currentType = reader.nextByte();
-    console.log(`>>>> ${ConfigType[currentType]}`)
   }
+
+  console.log(nesting);
 
   if (out.length === 1) return out[0];
   return out;
