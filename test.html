@@ -15,7 +15,9 @@
 const req = new XMLHttpRequest();
 req.addEventListener("readystatechange", () => {
   if (req.readyState === 4 && req.status === 200) {
-    console.log(readConfig2(new Uint8Array(req.response)));
+    const conf = readConfig2(new Uint8Array(req.response))
+    console.log(conf);
+    console.log(writeConfig2(conf));
   }
 });
 // req.open("GET", "nuclearcraft.ncpf");

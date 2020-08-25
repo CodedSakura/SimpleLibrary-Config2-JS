@@ -58,18 +58,79 @@ class ByteReader {
     const view = new DataView(buf);
     const bytes = this.nextBytes(4);
     bytes.forEach((v, i) => view.setUint8(i, v));
-    return view.getFloat32(0);
+    return view.getFloat32(0, false);
   }
   nextDouble(): number {
     const buf = new ArrayBuffer(8);
     const view = new DataView(buf);
     const bytes = this.nextBytes(8);
     bytes.forEach((v, i) => view.setUint8(i, v));
-    return view.getFloat64(0);
+    return view.getFloat64(0, false);
   }
   nextModifiedUTF8String(): string {
     const length = ByteReader.bytesToNumber(this.nextBytes(2));
     return String.fromCharCode(...this.nextBytes(length));
+  }
+}
+
+class ByteWriter {
+  private _data: number[] = [];
+
+  writeByte(v: number) {
+    this._data.push(v);
+  }
+  writeBytes(v: number[]) {
+    for (const i of v) this.writeByte(i);
+  }
+
+  get data(): Uint8Array {
+    return new Uint8Array(this._data);
+  }
+
+  static intToByes(v: number, count: number = 4): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < count; i++) {
+      out.unshift(v >> i * 8 & 255);
+    }
+    return out;
+  }
+  static bigintToBytes(v: bigint, count: number = 8): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < count; i++) {
+      out.unshift(Number(v >> BigInt(i * 8) & 255n));
+    }
+    return out;
+  }
+
+  writeShort(v: number) {
+    this.writeBytes(ByteWriter.intToByes(v, 2));
+  }
+  writeInteger(v: number) {
+    this.writeBytes(ByteWriter.intToByes(v, 4));
+  }
+  writeLong(v: bigint) {
+    this.writeBytes(ByteWriter.bigintToBytes(v, 4));
+  }
+  writeBoolean(v: boolean) {
+    this.writeByte(v ? 1 : 0);
+  }
+  writeFloat(v: number) {
+    const buf = new ArrayBuffer(4);
+    const view = new DataView(buf);
+    view.setFloat32(0, v, false);
+    this.writeBytes([...new Int8Array(buf)]);
+  }
+  writeDouble(v: number) {
+    const buf = new ArrayBuffer(8);
+    const view = new DataView(buf);
+    view.setFloat64(0, v, false);
+    this.writeBytes([...new Int8Array(buf)]);
+  }
+  writeModifiedUTF8String(v: string) {
+    this.writeBytes(ByteWriter.intToByes(v.length, 2));
+    for (let i = 0; i < v.length; i++) {
+      this.writeByte(v.charCodeAt(i));
+    }
   }
 }
 
@@ -82,8 +143,7 @@ enum ConfigType {
   Boolean,
   Long,
   Double,
-  HugeLong,
-  ConfigList,
+  ConfigList=9,
   Byte,
   Short,
   NumberList,
@@ -153,8 +213,9 @@ function readConfig2(data: Uint8Array): Config2Root[] {
     });
     return current;
   }
-  function rename(name) {
+  function rename(name, topArray) {
     let current = getTop();
+    if (topArray) current[""] = topArray.data;
     delete Object.assign(current, {[name]: current[""] })[""];
   }
 
@@ -187,7 +248,7 @@ function readConfig2(data: Uint8Array): Config2Root[] {
               break;
             }
           }
-          rename(reader.nextModifiedUTF8String());
+          rename(reader.nextModifiedUTF8String(), topArray);
         }
         break;
       }
@@ -230,8 +291,6 @@ function readConfig2(data: Uint8Array): Config2Root[] {
           data: reader.nextDouble(),
           name: skipName ? "" : reader.nextModifiedUTF8String()
         });
-        break;
-      case ConfigType.HugeLong:
         break;
       case ConfigType.ConfigList: {
         const data: Partial<{ data: any[], mode: number, type: number, length: number }> =
@@ -349,10 +408,20 @@ function readConfig2(data: Uint8Array): Config2Root[] {
         continue;
       }
       nesting.pop();
-      rename(reader.nextModifiedUTF8String());
+      rename(reader.nextModifiedUTF8String(), topArray);
     }
     currentType = reader.nextByte();
   }
 
   return out;
+}
+
+function writeConfig2(input: Config2Root[]): Uint8Array {
+  const out: ByteWriter = new ByteWriter();
+  for (const i in input) {
+    const {version, data} = input[i];
+    out.writeShort(version);
+    console.log(data);
+  }
+  return out.data;
 }
